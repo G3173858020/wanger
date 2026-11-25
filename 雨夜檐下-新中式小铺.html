@@ -1,0 +1,1718 @@
+<div id="rainy-night-microcosm">
+  <style>
+    #rainy-night-microcosm {
+      width: 100%;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 52% 32%, color-mix(in srgb, #43728b 28%, transparent) 0, transparent 38%),
+        radial-gradient(circle at 17% 68%, color-mix(in srgb, #753f73 15%, transparent) 0, transparent 34%),
+        linear-gradient(180deg, #071321 0%, #0b1b2b 52%, #07101a 100%);
+      border-radius: calc(var(--font-size-base, 16px) * 1.25);
+      isolation: isolate;
+    }
+
+    #rainy-night-microcosm .scene-shell {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16 / 10;
+      min-height: 500px;
+      overflow: hidden;
+    }
+
+    #rainy-night-microcosm canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+      cursor: grab;
+    }
+
+    #rainy-night-microcosm canvas.is-dragging {
+      cursor: grabbing;
+    }
+
+    #rainy-night-microcosm .atmosphere {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background:
+        radial-gradient(ellipse at 50% 54%, transparent 35%, rgba(2, 7, 13, 0.16) 68%, rgba(2, 6, 11, 0.5) 100%),
+        linear-gradient(180deg, rgba(119, 188, 207, 0.035), transparent 26%, transparent 75%, rgba(2, 6, 11, 0.12));
+      mix-blend-mode: normal;
+    }
+
+    #rainy-night-microcosm .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    @media (max-width: 640px) {
+      #rainy-night-microcosm .scene-shell {
+        min-height: 440px;
+        aspect-ratio: 1 / 1;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      #rainy-night-microcosm canvas {
+        cursor: default;
+      }
+    }
+  </style>
+
+  <div class="scene-shell">
+    <canvas aria-label="新中式雨夜小铺微缩模型，可拖拽旋转并滚轮缩放"></canvas>
+    <div class="atmosphere" aria-hidden="true"></div>
+    <p class="sr-only">一栋新中式暖光小铺位于湿润的方形街角底座上，木格窗、朱红灯映出雨夜层次。店内可见货架、冷柜、收银台、商品与暖色灯火。</p>
+  </div>
+
+  <script type="module">
+    const root = document.getElementById("rainy-night-microcosm");
+    const canvas = root.querySelector("canvas");
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    try {
+      const THREE = await import("https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js");
+
+      const renderer = new THREE.WebGLRenderer({
+        canvas,
+        antialias: true,
+        alpha: true,
+        powerPreference: "high-performance",
+      });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.12;
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      renderer.setClearColor(0x071321, 0);
+
+      const scene = new THREE.Scene();
+      scene.fog = new THREE.Fog(0x08131f, 27, 56);
+
+      const camera = new THREE.PerspectiveCamera(34, 1, 0.1, 100);
+      const cameraTarget = new THREE.Vector3(0, 1.78, 0);
+      const orbit = {
+        theta: 0.36,
+        phi: 1.28,
+        radius: 20.8,
+        targetTheta: 0.36,
+        targetPhi: 1.28,
+        targetRadius: 20.8,
+      };
+
+      const clock = new THREE.Clock();
+      const world = new THREE.Group();
+      scene.add(world);
+
+      const toonCanvas = document.createElement("canvas");
+      toonCanvas.width = 4;
+      toonCanvas.height = 1;
+      const toonContext = toonCanvas.getContext("2d");
+      [42, 118, 194, 255].forEach((value, index) => {
+        toonContext.fillStyle = `rgb(${value},${value},${value})`;
+        toonContext.fillRect(index, 0, 1, 1);
+      });
+      const toonMap = new THREE.CanvasTexture(toonCanvas);
+      toonMap.minFilter = THREE.NearestFilter;
+      toonMap.magFilter = THREE.NearestFilter;
+      toonMap.generateMipmaps = false;
+      toonMap.needsUpdate = true;
+
+      const materialCache = new Map();
+      const outlineCache = new Map();
+      const pieces = [];
+
+      function toon(color, options = {}) {
+        const key = `${color}|${options.emissive || 0}|${options.emissiveIntensity || 0}|${options.side || 0}|${options.transparent || 0}|${options.opacity ?? 1}`;
+        if (!materialCache.has(key)) {
+          materialCache.set(key, new THREE.MeshToonMaterial({
+            color,
+            gradientMap: toonMap,
+            emissive: options.emissive || 0x000000,
+            emissiveIntensity: options.emissiveIntensity || 0,
+            side: options.side || THREE.FrontSide,
+            transparent: !!options.transparent,
+            opacity: options.opacity ?? 1,
+            depthWrite: options.depthWrite ?? true,
+          }));
+        }
+        return materialCache.get(key);
+      }
+
+      function basic(color, options = {}) {
+        return new THREE.MeshBasicMaterial({
+          color,
+          transparent: !!options.transparent,
+          opacity: options.opacity ?? 1,
+          blending: options.additive ? THREE.AdditiveBlending : THREE.NormalBlending,
+          depthWrite: options.depthWrite ?? !options.transparent,
+          side: options.side || THREE.FrontSide,
+        });
+      }
+
+      function edgeMaterial(color = 0x0b1825, opacity = 0.52) {
+        const key = `${color}|${opacity}`;
+        if (!outlineCache.has(key)) {
+          outlineCache.set(key, new THREE.LineBasicMaterial({
+            color,
+            transparent: true,
+            opacity,
+            depthWrite: false,
+          }));
+        }
+        return outlineCache.get(key);
+      }
+
+      function addEdges(mesh, color = 0x0b1825, opacity = 0.52) {
+        const lines = new THREE.LineSegments(
+          new THREE.EdgesGeometry(mesh.geometry, 28),
+          edgeMaterial(color, opacity),
+        );
+        lines.renderOrder = 2;
+        mesh.add(lines);
+        return mesh;
+      }
+
+      function box(width, height, depth, material, options = {}) {
+        const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), material);
+        mesh.castShadow = options.castShadow !== false;
+        mesh.receiveShadow = options.receiveShadow !== false;
+        if (options.edges !== false) addEdges(mesh, options.edgeColor, options.edgeOpacity ?? 0.42);
+        return mesh;
+      }
+
+      function cylinder(radiusTop, radiusBottom, height, segments, material, options = {}) {
+        const mesh = new THREE.Mesh(
+          new THREE.CylinderGeometry(radiusTop, radiusBottom, height, segments),
+          material,
+        );
+        mesh.castShadow = options.castShadow !== false;
+        mesh.receiveShadow = false;
+        if (options.edges) addEdges(mesh, options.edgeColor, options.edgeOpacity ?? 0.38);
+        return mesh;
+      }
+
+      function sphere(radius, material, detail = 16) {
+        const mesh = new THREE.Mesh(new THREE.SphereGeometry(radius, detail, Math.max(8, detail / 2)), material);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        return mesh;
+      }
+
+      function plane(width, height, material) {
+        return new THREE.Mesh(new THREE.PlaneGeometry(width, height), material);
+      }
+
+      function makePiece(object, phase, parent = world, scatter = 2.6) {
+        parent.add(object);
+        const homePosition = object.position.clone();
+        const homeQuaternion = object.quaternion.clone();
+        const homeScale = object.scale.clone();
+        const angle = Math.random() * Math.PI * 2;
+        const distance = Math.min(Math.max(scatter * (0.4 + Math.random()), 0.45), 3.9);
+        const fromPosition = new THREE.Vector3(
+          THREE.MathUtils.clamp(homePosition.x + Math.cos(angle) * distance, -8.05, 8.05),
+          Math.max(0.13, homePosition.y < 1 ? 0.13 : 0.16 + Math.random() * 0.35),
+          THREE.MathUtils.clamp(homePosition.z + Math.sin(angle) * distance, -8.05, 8.05),
+        );
+        const fromQuaternion = homeQuaternion.clone().multiply(
+          new THREE.Quaternion().setFromEuler(new THREE.Euler(
+            (Math.random() - 0.5) * 0.5,
+            (Math.random() - 0.5) * 0.8,
+            (Math.random() - 0.5) * 0.5,
+          )),
+        );
+        pieces.push({
+          object,
+          homePosition,
+          homeQuaternion,
+          homeScale,
+          fromPosition,
+          fromQuaternion,
+          phase,
+          start: 0.45 + phase * 1.03 + (Math.random() - 0.5) * 0.36,
+          duration: 0.9 + Math.random() * 0.38,
+        });
+        object.visible = false;
+        return object;
+      }
+
+      function roundedRect(ctx, x, y, width, height, radius) {
+        const r = Math.min(radius, width / 2, height / 2);
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.arcTo(x + width, y, x + width, y + height, r);
+        ctx.arcTo(x + width, y + height, x, y + height, r);
+        ctx.arcTo(x, y + height, x, y, r);
+        ctx.arcTo(x, y, x + width, y, r);
+        ctx.closePath();
+      }
+
+      function canvasTexture(width, height, draw) {
+        const surface = document.createElement("canvas");
+        surface.width = width;
+        surface.height = height;
+        const ctx = surface.getContext("2d");
+        draw(ctx, width, height);
+        const texture = new THREE.CanvasTexture(surface);
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.anisotropy = Math.min(renderer.capabilities.getMaxAnisotropy(), 8);
+        return texture;
+      }
+
+      const signTexture = canvasTexture(1024, 256, (ctx, width, height) => {
+        ctx.fillStyle = "#2a1d1a";
+        roundedRect(ctx, 4, 4, width - 8, height - 8, 28);
+        ctx.fill();
+        ctx.strokeStyle = "#c89b55";
+        ctx.lineWidth = 6;
+        roundedRect(ctx, 18, 18, width - 36, height - 36, 20);
+        ctx.stroke();
+
+        // Traditional fret-like corner marks keep the sign graphic and architectural.
+        ctx.strokeStyle = "#8b6337";
+        ctx.lineWidth = 4;
+        for (const side of [-1, 1]) {
+          const originX = side < 0 ? 54 : width - 54;
+          ctx.beginPath();
+          ctx.moveTo(originX, 66);
+          ctx.lineTo(originX + side * 38, 66);
+          ctx.lineTo(originX + side * 38, 98);
+          ctx.lineTo(originX + side * 16, 98);
+          ctx.lineTo(originX + side * 16, 82);
+          ctx.stroke();
+        }
+
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#f6e5bd";
+        ctx.font = '700 106px "STKaiti", "KaiTi", "Microsoft YaHei", serif';
+        ctx.fillText("雨檐小铺", width / 2, 126);
+        ctx.fillStyle = "#d7ab66";
+        ctx.font = '500 28px "Microsoft YaHei", sans-serif';
+        ctx.fillText("二十四小时 · 檐下灯火", width / 2, 184);
+
+        ctx.fillStyle = "#a83c2f";
+        ctx.beginPath();
+        ctx.arc(930, 68, 30, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#f6dfb0";
+        ctx.font = '700 31px "KaiTi", "Microsoft YaHei", serif';
+        ctx.fillText("夜", 930, 80);
+
+        ctx.strokeStyle = "#e5c17d";
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.moveTo(86, 206);
+        ctx.lineTo(206, 206);
+        ctx.moveTo(width - 206, 206);
+        ctx.lineTo(width - 86, 206);
+        ctx.stroke();
+      });
+
+      const sidewalkTexture = canvasTexture(512, 512, (ctx, width, height) => {
+        ctx.fillStyle = "#76838a";
+        ctx.fillRect(0, 0, width, height);
+        ctx.strokeStyle = "rgba(25, 43, 52, .34)";
+        ctx.lineWidth = 3;
+        for (let x = 0; x <= width; x += 128) {
+          ctx.beginPath();
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, height);
+          ctx.stroke();
+        }
+        for (let y = 0; y <= height; y += 128) {
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(width, y);
+          ctx.stroke();
+        }
+        for (let i = 0; i < 90; i += 1) {
+          const x = Math.random() * width;
+          const y = Math.random() * height;
+          ctx.fillStyle = `rgba(218, 228, 225, ${Math.random() * 0.06})`;
+          ctx.fillRect(x, y, Math.random() * 12 + 2, Math.random() * 4 + 1);
+        }
+      });
+      sidewalkTexture.wrapS = sidewalkTexture.wrapT = THREE.RepeatWrapping;
+      sidewalkTexture.repeat.set(11, 3.4);
+
+      const floorTexture = canvasTexture(512, 512, (ctx, width, height) => {
+        ctx.fillStyle = "#e8dfca";
+        ctx.fillRect(0, 0, width, height);
+        ctx.strokeStyle = "#c8bfab";
+        ctx.lineWidth = 4;
+        for (let x = 0; x <= width; x += 128) {
+          ctx.beginPath();
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, height);
+          ctx.stroke();
+        }
+        for (let y = 0; y <= height; y += 128) {
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(width, y);
+          ctx.stroke();
+        }
+      });
+      floorTexture.wrapS = floorTexture.wrapT = THREE.RepeatWrapping;
+      floorTexture.repeat.set(5.5, 3.4);
+
+      const roadTexture = canvasTexture(512, 512, (ctx, width, height) => {
+        ctx.fillStyle = "#26353f";
+        ctx.fillRect(0, 0, width, height);
+        for (let i = 0; i < 1500; i += 1) {
+          const shade = 35 + Math.floor(Math.random() * 32);
+          ctx.fillStyle = `rgba(${shade},${shade + 7},${shade + 12},${Math.random() * 0.22})`;
+          const size = Math.random() * 3 + 0.5;
+          ctx.fillRect(Math.random() * width, Math.random() * height, size, size);
+        }
+      });
+      roadTexture.wrapS = roadTexture.wrapT = THREE.RepeatWrapping;
+      roadTexture.repeat.set(8, 2);
+
+      const glowTexture = canvasTexture(128, 128, (ctx, width, height) => {
+        const gradient = ctx.createRadialGradient(
+          width / 2, height / 2, 0,
+          width / 2, height / 2, width / 2,
+        );
+        gradient.addColorStop(0, "rgba(255,255,255,1)");
+        gradient.addColorStop(0.18, "rgba(255,255,255,.72)");
+        gradient.addColorStop(0.48, "rgba(255,255,255,.2)");
+        gradient.addColorStop(1, "rgba(255,255,255,0)");
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, width, height);
+      });
+
+      function glow(color, size, opacity = 0.7) {
+        const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+          map: glowTexture,
+          color,
+          transparent: true,
+          opacity,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        }));
+        sprite.scale.set(size, size, 1);
+        return sprite;
+      }
+
+      function addLightGlow(parent, position, color, size, opacity = 0.65) {
+        const halo = glow(color, size, opacity);
+        halo.position.copy(position);
+        parent.add(halo);
+        return halo;
+      }
+
+      const palette = {
+        ink: 0x0a1723,
+        wood: 0x4a2d26,
+        teal: 0x355b59,
+        mint: 0x89b7a8,
+        cream: 0xe8d8ba,
+        warm: 0xf1bb70,
+        coral: 0xb54838,
+        pink: 0xc26f5f,
+        road: 0x273740,
+        grass: 0x284c43,
+        glass: 0x96dfea,
+        fridge: 0xbceefa,
+      };
+
+      // Square collectible plinth.
+      const base = new THREE.Group();
+      const baseSide = box(18.8, 0.78, 18.8, toon(0x132331), {
+        edgeColor: 0x07111b,
+        edgeOpacity: 0.78,
+      });
+      baseSide.position.y = -0.43;
+      base.add(baseSide);
+
+      const baseLip = box(18.3, 0.14, 18.3, toon(0x3a4d57), {
+        edgeColor: 0x17252e,
+        edgeOpacity: 0.7,
+      });
+      baseLip.position.y = -0.03;
+      base.add(baseLip);
+
+      const groundTop = box(17.9, 0.1, 17.9, toon(0x344b4a), {
+        edgeColor: 0x1b3031,
+        edgeOpacity: 0.5,
+      });
+      groundTop.position.y = 0.075;
+      base.add(groundTop);
+
+      const lawn = box(17.35, 0.045, 10.1, toon(palette.grass), {
+        edges: false,
+        castShadow: false,
+      });
+      lawn.position.set(0, 0.145, -3.65);
+      base.add(lawn);
+
+      const accentNorth = box(17.5, 0.035, 0.07, basic(0x4bb7bd), {
+        edges: false,
+        castShadow: false,
+      });
+      accentNorth.position.set(0, 0.19, -8.77);
+      base.add(accentNorth);
+
+      const accentSouth = accentNorth.clone();
+      accentSouth.position.z = 8.77;
+      base.add(accentSouth);
+
+      const accentWest = box(0.07, 0.035, 17.5, basic(0x8e5c88), {
+        edges: false,
+        castShadow: false,
+      });
+      accentWest.position.set(-8.77, 0.19, 0);
+      base.add(accentWest);
+
+      const accentEast = accentWest.clone();
+      accentEast.position.x = 8.77;
+      base.add(accentEast);
+      makePiece(base, 0, world, 0);
+      pieces[pieces.length - 1].fromPosition.set(0, -1.6, 0);
+
+      // Street, sidewalk, and reflections.
+      const sidewalk = new THREE.Mesh(
+        new THREE.BoxGeometry(17.15, 0.13, 3.55),
+        new THREE.MeshStandardMaterial({
+          map: sidewalkTexture,
+          color: 0xaab1ad,
+          roughness: 0.62,
+          metalness: 0.08,
+        }),
+      );
+      sidewalk.position.set(0, 0.2, 4.83);
+      sidewalk.receiveShadow = true;
+      addEdges(sidewalk, 0x20404a, 0.42);
+      makePiece(sidewalk, 1, world, 2.1);
+
+      const curb = box(17.2, 0.2, 0.18, toon(0xb5b3a7), {
+        edgeColor: 0x506168,
+        edgeOpacity: 0.4,
+        castShadow: false,
+      });
+      curb.position.set(0, 0.21, 6.57);
+      makePiece(curb, 1, world, 1.8);
+
+      const road = new THREE.Mesh(
+        new THREE.BoxGeometry(17.2, 0.085, 2.24),
+        new THREE.MeshStandardMaterial({
+          map: roadTexture,
+          color: 0x40505a,
+          roughness: 0.36,
+          metalness: 0.32,
+        }),
+      );
+      road.position.set(0, 0.15, 7.74);
+      road.receiveShadow = true;
+      makePiece(road, 1, world, 2.3);
+
+      for (let i = -3; i <= 3; i += 1) {
+        const dash = box(0.78, 0.018, 0.085, basic(0xdde8e6), {
+          edges: false,
+          castShadow: false,
+        });
+        dash.position.set(i * 2.15, 0.202, 7.72);
+        makePiece(dash, 2, world, 1.5);
+      }
+
+      const crossingMaterial = basic(0xd5dfdb);
+      for (let i = 0; i < 4; i += 1) {
+        const stripe = box(0.36, 0.02, 1.85, crossingMaterial, {
+          edges: false,
+          castShadow: false,
+        });
+        stripe.position.set(6.42 + i * 0.68, 0.205, 7.72);
+        makePiece(stripe, 2, world, 1.1);
+      }
+
+      const puddleMaterial = new THREE.MeshPhysicalMaterial({
+        color: 0x6b9ba5,
+        roughness: 0.08,
+        metalness: 0.46,
+        transparent: true,
+        opacity: 0.29,
+        clearcoat: 1,
+        clearcoatRoughness: 0.08,
+        depthWrite: false,
+      });
+      const puddles = [];
+      [
+        [-5.2, 4.12, 1.1, 0.41],
+        [3.9, 5.66, 0.82, 0.28],
+        [-1.0, 7.95, 1.32, 0.22],
+        [6.7, 4.9, 0.58, 0.24],
+        [-6.7, 6.16, 0.73, 0.25],
+      ].forEach(([x, z, sx, sz], index) => {
+        const puddle = new THREE.Mesh(new THREE.CircleGeometry(1, 48), puddleMaterial);
+        puddle.rotation.x = -Math.PI / 2;
+        puddle.scale.set(sx, sz, 1);
+        puddle.position.set(x, 0.293 + index * 0.001, z);
+        puddle.receiveShadow = true;
+        puddle.castShadow = false;
+        makePiece(puddle, 3, world, 1.8);
+        puddles.push(puddle);
+
+        const shimmer = glow(index % 2 ? 0x65d8dc : 0xf9aa77, 1.8, 0.13);
+        shimmer.position.set(x, 0.34, z);
+        shimmer.scale.z = 0.34;
+        makePiece(shimmer, 3, world, 1.6);
+      });
+
+      // Main store shell.
+      const podium = box(9.06, 0.42, 5.94, toon(0x43525a), {
+        edgeColor: 0x101f2a,
+        edgeOpacity: 0.62,
+      });
+      podium.position.set(0, 0.37, -0.18);
+      makePiece(podium, 1, world, 2.2);
+
+      const storeFloor = new THREE.Mesh(
+        new THREE.BoxGeometry(8.64, 0.09, 5.5),
+        new THREE.MeshStandardMaterial({
+          map: floorTexture,
+          color: 0xfff4d7,
+          roughness: 0.34,
+          emissive: 0x4d3820,
+          emissiveIntensity: 0.18,
+        }),
+      );
+      storeFloor.position.set(0, 0.615, -0.18);
+      storeFloor.receiveShadow = true;
+      addEdges(storeFloor, 0x6d6456, 0.32);
+      makePiece(storeFloor, 2, world, 1.8);
+
+      const creamWall = toon(palette.cream);
+      const darkWood = toon(palette.wood);
+      const backWall = box(8.62, 3.08, 0.22, creamWall, {
+        edgeColor: 0x3f3a32,
+        edgeOpacity: 0.38,
+      });
+      backWall.position.set(0, 2.1, -2.82);
+      makePiece(backWall, 1, world, 2.5);
+
+      const interiorBack = box(8.32, 2.72, 0.035, toon(0xc7b797), {
+        edges: false,
+        castShadow: false,
+      });
+      interiorBack.position.set(0, 1.93, -2.695);
+      makePiece(interiorBack, 2, world, 2);
+
+      const leftWall = box(0.22, 3.08, 5.48, creamWall, {
+        edgeColor: 0x3f3a32,
+        edgeOpacity: 0.38,
+      });
+      leftWall.position.set(-4.32, 2.1, -0.18);
+      makePiece(leftWall, 1, world, 2.3);
+
+      const rightWall = leftWall.clone();
+      rightWall.position.x = 4.32;
+      makePiece(rightWall, 1, world, 2.3);
+
+      const header = box(8.88, 0.74, 0.3, creamWall, {
+        edgeColor: 0x3f3a32,
+        edgeOpacity: 0.4,
+      });
+      header.position.set(0, 3.23, 2.55);
+      makePiece(header, 1, world, 2.2);
+
+      // Side windows make the little shop readable from every orbit angle.
+      function addSideWindow(side) {
+        const frame = new THREE.Group();
+        frame.position.set(side * 4.445, 1.72, -0.65);
+        const pane = plane(2.2, 1.45, new THREE.MeshPhysicalMaterial({
+          color: 0x7acbd4,
+          roughness: 0.12,
+          metalness: 0.08,
+          transparent: true,
+          opacity: 0.45,
+          emissive: 0x6a3b17,
+          emissiveIntensity: 0.26,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        }));
+        pane.rotation.y = side * Math.PI / 2;
+        frame.add(pane);
+        for (const x of [-1.1, 0, 1.1]) {
+          const mullion = box(0.07, 1.56, 0.07, darkWood, { edgeOpacity: 0.3 });
+          mullion.position.set(0, 0, x);
+          frame.add(mullion);
+        }
+        for (const y of [-0.57, -0.19, 0.19, 0.57]) {
+          const rail = box(0.065, 0.052, 2.25, darkWood, { edgeOpacity: 0.3 });
+          rail.position.y = y;
+          frame.add(rail);
+        }
+        const mid = box(0.06, 0.07, 2.3, darkWood, { edgeOpacity: 0.3 });
+        frame.add(mid);
+        makePiece(frame, 2, world, 1.8);
+      }
+      addSideWindow(-1);
+      addSideWindow(1);
+
+      const glassMaterial = new THREE.MeshPhysicalMaterial({
+        color: 0xbcecf0,
+        roughness: 0.06,
+        metalness: 0.03,
+        transparent: true,
+        opacity: 0.105,
+        clearcoat: 1,
+        clearcoatRoughness: 0.04,
+        emissive: 0x6f4e2f,
+        emissiveIntensity: 0.035,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      const glassGroups = [];
+      [-3.08, -1.03, 1.03, 3.08].forEach((x, index) => {
+        const glass = box(1.94, 2.34, 0.045, glassMaterial, {
+          edges: false,
+          castShadow: false,
+          receiveShadow: false,
+        });
+        glass.position.set(x, 1.82, 2.67);
+        glass.renderOrder = 3;
+        makePiece(glass, 2, world, 1.8);
+        glassGroups.push(glass);
+
+        const reflection = plane(1.72, 1.7, basic(index % 2 ? 0x9bd9dc : 0xffc37a, {
+          transparent: true,
+          opacity: 0.035,
+          additive: true,
+          depthWrite: false,
+        }));
+        reflection.position.set(x + 0.28, 1.95, 2.698);
+        reflection.rotation.z = -0.2;
+        makePiece(reflection, 2, world, 1.8);
+      });
+
+      [-4.16, -2.06, 0, 2.06, 4.16].forEach((x) => {
+        const upright = box(0.11, 2.52, 0.14, darkWood, {
+          edgeColor: 0x0c1720,
+          edgeOpacity: 0.55,
+        });
+        upright.position.set(x, 1.8, 2.69);
+        makePiece(upright, 2, world, 2);
+      });
+      const sill = box(8.56, 0.15, 0.22, darkWood, { edgeOpacity: 0.48 });
+      sill.position.set(0, 0.67, 2.69);
+      makePiece(sill, 2, world, 1.8);
+      const lintel = sill.clone();
+      lintel.position.y = 3.06;
+      makePiece(lintel, 2, world, 1.8);
+
+      // A traditional open lattice transom signals the new-Chinese facade while
+      // leaving the lower glass clear for the shop interior.
+      const latticeWood = toon(0x472a23, {
+        emissive: 0x2b110d,
+        emissiveIntensity: 0.12,
+      });
+      const frontLattice = new THREE.Group();
+      [-3.08, -1.03, 1.03, 3.08].forEach((centerX) => {
+        for (const y of [2.56, 2.81, 3.06]) {
+          const rail = box(1.94, 0.052, 0.075, latticeWood, {
+            edges: false,
+            castShadow: false,
+          });
+          rail.position.set(centerX, y, 2.72);
+          frontLattice.add(rail);
+        }
+        for (let column = -2; column <= 2; column += 1) {
+          const stave = box(0.046, 0.52, 0.075, latticeWood, {
+            edges: false,
+            castShadow: false,
+          });
+          stave.position.set(centerX + column * 0.37, 2.81, 2.72);
+          frontLattice.add(stave);
+        }
+        for (let bay = -1; bay <= 1; bay += 1) {
+          for (const angle of [-0.7, 0.7]) {
+            const diagonal = box(0.028, 0.3, 0.078, latticeWood, {
+              edges: false,
+              castShadow: false,
+            });
+            diagonal.position.set(centerX + bay * 0.74, 2.81, 2.724);
+            diagonal.rotation.z = angle;
+            frontLattice.add(diagonal);
+          }
+        }
+      });
+      makePiece(frontLattice, 3, world, 2.1);
+
+      for (const x of [-0.24, 0.24]) {
+        const handle = cylinder(0.035, 0.035, 0.66, 10, toon(0xd8b26e, {
+          emissive: 0x5d3b14,
+          emissiveIntensity: 0.24,
+        }), { edges: false });
+        handle.position.set(x, 1.55, 2.78);
+        makePiece(handle, 3, world, 0.7);
+      }
+
+      // A deep vermilion and antique-gold rain canopy.
+      for (let i = 0; i < 6; i += 1) {
+        const panel = box(1.48, 0.08, 1.28, i % 2 ? toon(0xb28f62) : toon(0x743b31), {
+          edgeColor: 0x2f1714,
+          edgeOpacity: 0.45,
+        });
+        panel.position.set(-3.7 + i * 1.48, 2.94, 3.23);
+        panel.rotation.x = 0.13;
+        makePiece(panel, 2, world, 2.1);
+
+        const valance = box(1.46, 0.23, 0.07, i % 2 ? toon(0xd8c397) : toon(0x5e2d27), {
+          edgeColor: 0x2b1512,
+          edgeOpacity: 0.38,
+        });
+        valance.position.set(-3.7 + i * 1.48, 2.83, 3.86);
+        makePiece(valance, 2, world, 2);
+      }
+
+      const signBoard = box(6.28, 0.78, 0.14, toon(0x39231f, {
+        emissive: 0x4a1d13,
+        emissiveIntensity: 0.2,
+      }), {
+        edgeColor: 0xd2a35c,
+        edgeOpacity: 0.54,
+      });
+      signBoard.position.set(0, 3.23, 3.18);
+      makePiece(signBoard, 2, world, 2.4);
+      const signFace = plane(6.16, 0.69, new THREE.MeshBasicMaterial({
+        map: signTexture,
+        transparent: true,
+        toneMapped: false,
+      }));
+      signFace.position.set(0, 3.23, 3.262);
+      makePiece(signFace, 2, world, 2.4);
+      addLightGlow(world, new THREE.Vector3(0, 3.25, 3.36), 0xe6aa62, 1.55, 0.14);
+
+      function addCouplet(side, text) {
+        const group = new THREE.Group();
+        group.position.set(side * 4.21, 2.32, 2.89);
+        const board = box(0.42, 1.4, 0.07, toon(0x7a3028, {
+          emissive: 0x4d170f,
+          emissiveIntensity: 0.17,
+        }), {
+          edgeColor: 0xd0a45f,
+          edgeOpacity: 0.48,
+        });
+        group.add(board);
+        const texture = canvasTexture(256, 832, (ctx, width, height) => {
+          ctx.fillStyle = "#7a3028";
+          ctx.fillRect(0, 0, width, height);
+          ctx.strokeStyle = "#d4aa67";
+          ctx.lineWidth = 7;
+          ctx.strokeRect(15, 15, width - 30, height - 30);
+          ctx.textAlign = "center";
+          ctx.fillStyle = "#f4dca7";
+          ctx.font = '700 132px "STKaiti", "KaiTi", "Microsoft YaHei", serif';
+          ctx.fillText(text[0], width / 2, 330);
+          ctx.fillText(text[1], width / 2, 590);
+        });
+        const face = plane(0.36, 1.32, new THREE.MeshBasicMaterial({
+          map: texture,
+          transparent: true,
+          toneMapped: false,
+        }));
+        face.position.z = 0.041;
+        group.add(face);
+        makePiece(group, 3, world, 1.55);
+      }
+      addCouplet(-1, "檐下");
+      addCouplet(1, "灯明");
+
+      // Pitched roof and gable panels.
+      const roofAngle = Math.atan2(1.18, 3.12);
+      const roofLength = Math.hypot(1.18, 3.12);
+      const frontRoof = box(9.32, 0.18, roofLength + 0.18, toon(0x303b3d), {
+        edgeColor: 0x11191c,
+        edgeOpacity: 0.72,
+      });
+      frontRoof.position.set(0, 4.18, 1.56);
+      frontRoof.rotation.x = roofAngle;
+      makePiece(frontRoof, 2, world, 2.7);
+
+      const backRoof = box(9.32, 0.18, roofLength + 0.18, toon(0x303b3d), {
+        edgeColor: 0x11191c,
+        edgeOpacity: 0.72,
+      });
+      backRoof.position.set(0, 4.18, -1.92);
+      backRoof.rotation.x = -roofAngle;
+      makePiece(backRoof, 2, world, 2.7);
+
+      const ridge = cylinder(0.12, 0.12, 9.42, 12, toon(0x1c272a), { edges: true });
+      ridge.rotation.z = Math.PI / 2;
+      ridge.position.set(0, 4.77, -0.18);
+      makePiece(ridge, 2, world, 2.5);
+
+      // Raised tile ribs and lifted corner tips give the roof a restrained
+      // Chinese silhouette without turning the shop into a palace.
+      const roofTileGroup = new THREE.Group();
+      const roofTileMaterial = toon(0x1e2a2d);
+      for (let i = -14; i <= 14; i += 1) {
+        const frontTileRib = box(0.055, 0.045, roofLength + 0.04, roofTileMaterial, {
+          edges: false,
+          castShadow: false,
+        });
+        frontTileRib.position.set(i * 0.31, 4.28, 1.56);
+        frontTileRib.rotation.x = roofAngle;
+        roofTileGroup.add(frontTileRib);
+
+        const backTileRib = frontTileRib.clone();
+        backTileRib.position.z = -1.92;
+        backTileRib.rotation.x = -roofAngle;
+        roofTileGroup.add(backTileRib);
+      }
+      const goldenEave = box(9.58, 0.1, 0.13, toon(0xb58a4a), {
+        edgeColor: 0x3d2718,
+        edgeOpacity: 0.5,
+      });
+      goldenEave.position.set(0, 3.59, 3.08);
+      roofTileGroup.add(goldenEave);
+      makePiece(roofTileGroup, 3, world, 2.6);
+
+      for (const side of [-1, 1]) {
+        const eaveTip = cylinder(0.035, 0.115, 0.92, 6, toon(0x273234), {
+          edges: true,
+          edgeOpacity: 0.65,
+        });
+        eaveTip.position.set(side * 4.58, 3.84, 3.1);
+        eaveTip.rotation.z = -side * 1.05;
+        eaveTip.rotation.x = -0.1;
+        makePiece(eaveTip, 3, world, 2.1);
+      }
+
+      function gablePanel(side) {
+        const shape = new THREE.Shape();
+        shape.moveTo(-2.98, 0);
+        shape.lineTo(2.98, 0);
+        shape.lineTo(0, 1.27);
+        shape.closePath();
+        const panel = new THREE.Mesh(new THREE.ShapeGeometry(shape), toon(palette.cream, {
+          side: THREE.DoubleSide,
+        }));
+        panel.rotation.y = Math.PI / 2;
+        panel.position.set(side * 4.43, 3.57, -0.18);
+        panel.castShadow = true;
+        addEdges(panel, 0x564c3f, 0.34);
+        return makePiece(panel, 2, world, 2.1);
+      }
+      gablePanel(-1);
+      gablePanel(1);
+
+      const fascia = box(9.62, 0.16, 0.2, darkWood, { edgeOpacity: 0.52 });
+      fascia.position.set(0, 3.6, 3.07);
+      makePiece(fascia, 3, world, 1.9);
+
+      // Rooftop rain tank and miniature vent.
+      const roofBox = box(1.1, 0.62, 0.8, toon(0x50616a), {
+        edgeColor: 0x142732,
+        edgeOpacity: 0.62,
+      });
+      roofBox.position.set(-2.45, 4.45, -1.45);
+      roofBox.rotation.z = 0.03;
+      makePiece(roofBox, 3, world, 2);
+      const ventPipe = cylinder(0.07, 0.07, 1.1, 10, toon(0xa9a79b), { edges: true });
+      ventPipe.position.set(2.68, 4.86, -1.08);
+      makePiece(ventPipe, 3, world, 1.7);
+
+      // Warm light bars on the ceiling.
+      const ceilingGlowMaterial = basic(0xffe7b1, {
+        transparent: true,
+        opacity: 0.98,
+      });
+      [-2.42, 0, 2.42].forEach((x) => {
+        const lightBar = box(2.2, 0.055, 0.12, ceilingGlowMaterial, {
+          edges: false,
+          castShadow: false,
+        });
+        lightBar.position.set(x, 3.31, -0.22);
+        makePiece(lightBar, 3, world, 1.5);
+        addLightGlow(world, new THREE.Vector3(x, 3.24, -0.16), 0xffd99a, 1.15, 0.16);
+      });
+
+      // Refrigerated drinks wall.
+      const fridgeGroup = new THREE.Group();
+      fridgeGroup.position.set(-2.1, 0.66, -2.53);
+      const fridgeShell = box(3.5, 2.35, 0.58, toon(0xd9e3df), {
+        edgeColor: 0x36535a,
+        edgeOpacity: 0.46,
+      });
+      fridgeShell.position.set(0, 1.175, 0);
+      fridgeGroup.add(fridgeShell);
+      for (let door = -1; door <= 1; door += 1) {
+        const doorPane = box(1.02, 2.02, 0.04, new THREE.MeshPhysicalMaterial({
+          color: 0x97e4ed,
+          emissive: 0x286c79,
+          emissiveIntensity: 0.45,
+          transparent: true,
+          opacity: 0.28,
+          roughness: 0.1,
+          metalness: 0.04,
+          depthWrite: false,
+        }), { edges: false, castShadow: false });
+        doorPane.position.set(door * 1.12, 1.25, 0.315);
+        fridgeGroup.add(doorPane);
+        const doorFrame = box(0.06, 2.08, 0.07, toon(0x5c7075), { edgeOpacity: 0.25 });
+        doorFrame.position.set(door * 1.12 + 0.5, 1.25, 0.34);
+        fridgeGroup.add(doorFrame);
+      }
+      const bottleColors = [0xe46b66, 0xf0c75d, 0x6cb7c6, 0xe495b7, 0x79b579, 0xeee5d0];
+      for (let row = 0; row < 4; row += 1) {
+        const shelf = box(3.18, 0.055, 0.42, toon(0x91aaad), { edges: false });
+        shelf.position.set(0, 0.34 + row * 0.51, 0.02);
+        fridgeGroup.add(shelf);
+        for (let col = 0; col < 9; col += 1) {
+          const bottle = cylinder(0.045, 0.052, 0.19, 7, toon(bottleColors[(row + col) % bottleColors.length], {
+            emissive: 0x1c2528,
+            emissiveIntensity: 0.11,
+          }), { edges: false, castShadow: false });
+          bottle.position.set(-1.33 + col * 0.33, 0.43 + row * 0.51, 0.24);
+          fridgeGroup.add(bottle);
+          const cap = cylinder(0.027, 0.027, 0.035, 7, basic(0xf4edda), { edges: false, castShadow: false });
+          cap.position.set(bottle.position.x, bottle.position.y + 0.11, bottle.position.z);
+          fridgeGroup.add(cap);
+        }
+      }
+      makePiece(fridgeGroup, 3, world, 2);
+      addLightGlow(world, new THREE.Vector3(-2.1, 1.85, -2.14), 0x7fe6f3, 2.35, 0.22);
+
+      // Back shelf with dense, readable package shapes.
+      const shelfGroup = new THREE.Group();
+      shelfGroup.position.set(2.17, 0.72, -2.62);
+      for (const x of [-1.62, 1.62]) {
+        const upright = box(0.08, 2.05, 0.46, toon(0x5b6a6d), { edgeOpacity: 0.3 });
+        upright.position.set(x, 0.98, 0);
+        shelfGroup.add(upright);
+      }
+      for (let tier = 0; tier < 4; tier += 1) {
+        const board = box(3.26, 0.07, 0.42, toon(0x97a29d), { edgeOpacity: 0.22 });
+        board.position.set(0, 0.18 + tier * 0.49, 0);
+        shelfGroup.add(board);
+        for (let i = 0; i < 7; i += 1) {
+          const product = box(0.3 + Math.random() * 0.09, 0.24 + Math.random() * 0.1, 0.2, toon(
+            [0xe77d62, 0xd6ae58, 0x74ae9b, 0x8e83b8, 0xd8d3aa][(tier + i) % 5],
+          ), { edgeOpacity: 0.22, castShadow: false });
+          product.position.set(-1.3 + i * 0.44, 0.36 + tier * 0.49, 0.218);
+          shelfGroup.add(product);
+        }
+      }
+      makePiece(shelfGroup, 3, world, 1.75);
+
+      // Central gondola shelf.
+      const gondola = new THREE.Group();
+      gondola.position.set(-0.88, 0.72, -0.04);
+      const gondolaEndMat = toon(0x5d6b68);
+      for (const x of [-1.42, 1.42]) {
+        const end = box(0.15, 1.24, 0.84, gondolaEndMat, { edgeOpacity: 0.3 });
+        end.position.set(x, 0.62, 0);
+        gondola.add(end);
+      }
+      for (let tier = 0; tier < 3; tier += 1) {
+        const tierBoard = box(2.92, 0.065, 0.88, toon(0xc4bb9f), { edgeOpacity: 0.22 });
+        tierBoard.position.set(0, 0.23 + tier * 0.42, 0);
+        gondola.add(tierBoard);
+        for (let side = -1; side <= 1; side += 2) {
+          for (let i = 0; i < 8; i += 1) {
+            const item = box(0.22 + Math.random() * 0.08, 0.19 + Math.random() * 0.12, 0.16, toon(
+              [0xf1d59c, 0xd66955, 0x6caeb4, 0x879cb7, 0xdca9bf][(i + tier) % 5],
+            ), { edges: false, castShadow: false });
+            item.position.set(-1.15 + i * 0.33, 0.36 + tier * 0.42, side * 0.29);
+            gondola.add(item);
+          }
+        }
+      }
+      const gondolaHeader = box(3.16, 0.28, 0.92, toon(0x34636c, {
+        emissive: 0x163b40,
+        emissiveIntensity: 0.18,
+      }), { edgeColor: 0x91d8cf, edgeOpacity: 0.34 });
+      gondolaHeader.position.set(0, 1.54, 0);
+      gondola.add(gondolaHeader);
+      makePiece(gondola, 4, world, 1.6);
+
+      // Checkout counter and hot-food station along the right wall.
+      const counter = new THREE.Group();
+      counter.position.set(3.35, 0.67, -0.26);
+      const counterBody = box(0.92, 1.0, 3.35, toon(0xd5ccb7), {
+        edgeColor: 0x5d554a,
+        edgeOpacity: 0.32,
+      });
+      counterBody.position.set(0, 0.5, 0);
+      counter.add(counterBody);
+      const counterTop = box(1.08, 0.1, 3.5, toon(0x596b67), { edgeOpacity: 0.28 });
+      counterTop.position.set(0, 1.02, 0);
+      counter.add(counterTop);
+      const register = box(0.42, 0.35, 0.48, toon(0x304a55), { edgeOpacity: 0.3 });
+      register.position.set(-0.1, 1.28, 1.02);
+      counter.add(register);
+      const registerScreen = plane(0.33, 0.22, basic(0x72d9c8, { transparent: true, opacity: 0.9 }));
+      registerScreen.position.set(-0.1, 1.33, 1.267);
+      counter.add(registerScreen);
+      const warmer = box(0.72, 0.62, 0.7, new THREE.MeshPhysicalMaterial({
+        color: 0xffc86e,
+        emissive: 0xc86622,
+        emissiveIntensity: 0.7,
+        transparent: true,
+        opacity: 0.42,
+        roughness: 0.24,
+        metalness: 0.22,
+        depthWrite: false,
+      }), { edges: false, castShadow: false });
+      warmer.position.set(0, 1.42, 0.22);
+      counter.add(warmer);
+      for (let i = 0; i < 3; i += 1) {
+        const snack = sphere(0.1, toon(0xf1c578), 9);
+        snack.scale.y = 0.6;
+        snack.position.set(0, 1.22 + i * 0.13, 0.04 + i * 0.08);
+        counter.add(snack);
+      }
+      makePiece(counter, 3, world, 1.6);
+      addLightGlow(world, new THREE.Vector3(3.35, 2.15, -0.02), 0xffc575, 1.65, 0.14);
+
+      // Small suspended shop signs, all part of the model.
+      const hangingSignTexture = canvasTexture(512, 192, (ctx, width, height) => {
+        ctx.fillStyle = "#ead6ad";
+        roundedRect(ctx, 6, 6, width - 12, height - 12, 28);
+        ctx.fill();
+        ctx.strokeStyle = "#713a2f";
+        ctx.lineWidth = 8;
+        ctx.stroke();
+        ctx.strokeStyle = "#b7894e";
+        ctx.lineWidth = 3;
+        roundedRect(ctx, 20, 20, width - 40, height - 40, 20);
+        ctx.stroke();
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#5a3028";
+        ctx.font = '700 82px "KaiTi", "Microsoft YaHei", serif';
+        ctx.fillText("热气小食", width / 2, 124);
+      });
+      const hangingBoard = plane(1.6, 0.6, new THREE.MeshBasicMaterial({
+        map: hangingSignTexture,
+        side: THREE.DoubleSide,
+        toneMapped: false,
+      }));
+      hangingBoard.position.set(0.64, 2.6, 1.36);
+      hangingBoard.rotation.y = -0.12;
+      makePiece(hangingBoard, 4, world, 1.4);
+      for (const x of [0.09, 1.19]) {
+        const string = box(0.018, 0.62, 0.018, basic(0x343c3e), { edges: false, castShadow: false });
+        string.position.set(x, 3.18, 1.36);
+        makePiece(string, 4, world, 1);
+      }
+
+      // Potted plants and lanterns at the entrance.
+      function plantPot(x, z, scale = 1) {
+        const group = new THREE.Group();
+        group.position.set(x, 0.22, z);
+        const pot = cylinder(0.25 * scale, 0.2 * scale, 0.42 * scale, 9, toon(0xa76d52), { edges: true });
+        pot.position.y = 0.21 * scale;
+        group.add(pot);
+        for (let i = 0; i < 6; i += 1) {
+          const leaf = sphere(0.21 * scale, toon(i % 2 ? 0x4f8765 : 0x386c58), 9);
+          leaf.scale.set(0.65, 1.2, 0.65);
+          leaf.position.set(
+            Math.cos(i * 2.4) * 0.18 * scale,
+            0.62 * scale + (i % 3) * 0.14 * scale,
+            Math.sin(i * 2.4) * 0.18 * scale,
+          );
+          group.add(leaf);
+        }
+        return makePiece(group, 5, world, 1.5);
+      }
+      plantPot(-3.95, 3.23, 0.92);
+      plantPot(3.92, 3.23, 1.02);
+
+      function paperLantern(x, z, color) {
+        const group = new THREE.Group();
+        group.position.set(x, 2.15, z);
+        const skin = sphere(0.27, toon(color, {
+          emissive: color,
+          emissiveIntensity: 0.62,
+        }), 16);
+        skin.scale.set(0.9, 1.12, 0.9);
+        group.add(skin);
+        for (const y of [-0.29, 0.29]) {
+          const rim = cylinder(0.14, 0.14, 0.065, 12, toon(0xb08b4d), { edges: false });
+          rim.position.y = y;
+          group.add(rim);
+        }
+        const equator = new THREE.Mesh(
+          new THREE.TorusGeometry(0.255, 0.012, 5, 20),
+          toon(0xc8a35f),
+        );
+        equator.rotation.x = Math.PI / 2;
+        group.add(equator);
+        for (let i = -1; i <= 1; i += 1) {
+          const tassel = cylinder(0.012, 0.01, 0.28, 5, toon(0xd3a05c), {
+            edges: false,
+            castShadow: false,
+          });
+          tassel.position.set(i * 0.045, -0.44, 0);
+          tassel.rotation.z = i * 0.12;
+          group.add(tassel);
+        }
+        const cord = box(0.018, 0.48, 0.018, basic(0x3e433f), { edges: false, castShadow: false });
+        cord.position.y = 0.58;
+        group.add(cord);
+        addLightGlow(group, new THREE.Vector3(0, 0.02, 0), color, 0.95, 0.25);
+        return makePiece(group, 3, world, 1.2);
+      }
+      paperLantern(-2.7, 2.98, 0xd04f3b);
+      paperLantern(2.68, 2.98, 0xc74634);
+
+      for (let i = -6; i <= 6; i += 1) {
+        const bulb = sphere(0.045, basic(i % 2 ? 0xffd79c : 0xef7460), 8);
+        bulb.position.set(i * 0.46, 2.64 + Math.abs(i % 2) * 0.05, 3.46);
+        bulb.castShadow = false;
+        makePiece(bulb, 4, world, 0.8);
+      }
+
+      // Exterior drink machines in lacquer red and antique gold.
+      const vending = new THREE.Group();
+      vending.position.set(5.93, 0.22, 3.92);
+      const vendingBody = box(1.42, 2.32, 0.78, toon(0x5e302a), {
+        edgeColor: 0x241411,
+        edgeOpacity: 0.65,
+      });
+      vendingBody.position.y = 1.16;
+      vending.add(vendingBody);
+      const vendingFace = plane(1.2, 1.79, new THREE.MeshBasicMaterial({
+        color: 0xffdf9c,
+        transparent: true,
+        opacity: 0.92,
+        toneMapped: false,
+      }));
+      vendingFace.position.set(0, 1.32, 0.398);
+      vending.add(vendingFace);
+      const vendingTop = plane(1.12, 0.47, new THREE.MeshBasicMaterial({
+        color: 0x6f3329,
+        transparent: true,
+        opacity: 0.9,
+        toneMapped: false,
+      }));
+      vendingTop.position.set(0, 1.94, 0.403);
+      vending.add(vendingTop);
+      const vendingColors = [0xf26d62, 0xf0c761, 0x5bc0d5, 0xee8cbd, 0x7ac59e];
+      for (let row = 0; row < 4; row += 1) {
+        for (let col = 0; col < 5; col += 1) {
+          const can = cylinder(0.052, 0.052, 0.16, 8, toon(vendingColors[(row + col) % vendingColors.length]), {
+            edges: false,
+            castShadow: false,
+          });
+          can.position.set(-0.44 + col * 0.22, 0.92 + row * 0.28, 0.43);
+          vending.add(can);
+        }
+      }
+      const vendingSlot = box(0.65, 0.21, 0.04, toon(0x1b3038), { edges: false });
+      vendingSlot.position.set(0, 0.52, 0.422);
+      vending.add(vendingSlot);
+      addLightGlow(vending, new THREE.Vector3(0, 1.5, 0.45), 0xf4c578, 1.6, 0.2);
+      makePiece(vending, 4, world, 1.8);
+
+      // Compact second machine introduces a neon coral accent.
+      const iceBox = box(1.12, 1.05, 0.78, toon(0x4e4537), {
+        edgeColor: 0x1c2029,
+        edgeOpacity: 0.56,
+      });
+      iceBox.position.set(4.95, 0.74, 4.0);
+      makePiece(iceBox, 4, world, 1.8);
+      const iceLid = box(1.06, 0.14, 0.74, toon(0x9d7148, {
+        emissive: 0x503115,
+        emissiveIntensity: 0.22,
+      }), { edgeOpacity: 0.4 });
+      iceLid.position.set(4.95, 1.32, 4.0);
+      makePiece(iceLid, 4, world, 1.5);
+
+      // Street lamp.
+      const streetLamp = new THREE.Group();
+      streetLamp.position.set(-6.52, 0.22, 4.77);
+      const lampPole = cylinder(0.07, 0.09, 3.2, 10, toon(0x22343d), { edges: true });
+      lampPole.position.y = 1.6;
+      streetLamp.add(lampPole);
+      const lampArm = box(0.68, 0.08, 0.08, toon(0x22343d), { edgeOpacity: 0.3 });
+      lampArm.position.set(0.25, 3.12, 0);
+      streetLamp.add(lampArm);
+      const lampShade = cylinder(0.29, 0.18, 0.22, 12, toon(0x344a51), { edges: true });
+      lampShade.position.set(0.55, 3.03, 0);
+      streetLamp.add(lampShade);
+      const lampBulb = sphere(0.17, basic(0xffdba2), 12);
+      lampBulb.position.set(0.55, 2.9, 0);
+      streetLamp.add(lampBulb);
+      addLightGlow(streetLamp, new THREE.Vector3(0.55, 2.9, 0), 0xffc376, 2, 0.38);
+      makePiece(streetLamp, 4, world, 2);
+
+      const lampLight = new THREE.PointLight(0xffbf7a, 45, 8, 2);
+      lampLight.position.set(-5.97, 3.1, 4.77);
+      lampLight.castShadow = true;
+      lampLight.shadow.mapSize.set(512, 512);
+      world.add(lampLight);
+
+      // Bicycle.
+      function addBikeTube(group, start, end, radius = 0.035) {
+        const direction = new THREE.Vector3().subVectors(end, start);
+        const tube = cylinder(radius, radius, direction.length(), 7, toon(0xc88b5a), { edges: false });
+        tube.position.copy(start).add(end).multiplyScalar(0.5);
+        tube.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize());
+        group.add(tube);
+      }
+      const bicycle = new THREE.Group();
+      bicycle.position.set(-5.3, 0.32, 3.48);
+      bicycle.rotation.y = -0.24;
+      for (const x of [-0.67, 0.67]) {
+        const wheel = new THREE.Mesh(
+          new THREE.TorusGeometry(0.42, 0.035, 7, 22),
+          toon(0x26363c),
+        );
+        wheel.position.x = x;
+        wheel.rotation.y = Math.PI / 2;
+        wheel.castShadow = true;
+        bicycle.add(wheel);
+        const hub = cylinder(0.05, 0.05, 0.08, 8, toon(0xa6a29a), { edges: false });
+        hub.rotation.x = Math.PI / 2;
+        hub.position.x = x;
+        bicycle.add(hub);
+      }
+      addBikeTube(bicycle, new THREE.Vector3(-0.67, 0.42, 0), new THREE.Vector3(-0.08, 0.82, 0));
+      addBikeTube(bicycle, new THREE.Vector3(-0.08, 0.82, 0), new THREE.Vector3(0.56, 0.42, 0));
+      addBikeTube(bicycle, new THREE.Vector3(0.56, 0.42, 0), new THREE.Vector3(-0.1, 0.28, 0));
+      addBikeTube(bicycle, new THREE.Vector3(-0.1, 0.28, 0), new THREE.Vector3(-0.08, 0.82, 0));
+      addBikeTube(bicycle, new THREE.Vector3(-0.1, 0.28, 0), new THREE.Vector3(-0.67, 0.42, 0));
+      addBikeTube(bicycle, new THREE.Vector3(-0.08, 0.82, 0), new THREE.Vector3(0.38, 0.98, 0));
+      const seat = box(0.28, 0.07, 0.14, toon(0x3b4342), { edges: false });
+      seat.position.set(-0.15, 0.95, 0);
+      bicycle.add(seat);
+      const basket = box(0.34, 0.3, 0.3, toon(0xb9986d), { edgeOpacity: 0.3 });
+      basket.position.set(0.62, 0.85, 0);
+      bicycle.add(basket);
+      makePiece(bicycle, 4, world, 1.8);
+
+      // Tree, bushes, and garden rocks fill the compact back corner.
+      function bush(x, z, scale, color) {
+        const group = new THREE.Group();
+        group.position.set(x, 0.24, z);
+        for (let i = 0; i < 4; i += 1) {
+          const lobe = sphere(0.5 * scale, toon(color), 10);
+          lobe.scale.set(1.2, 0.75, 1);
+          lobe.position.set(
+            (i - 1.5) * 0.42 * scale,
+            0.28 * scale + (i % 2) * 0.14 * scale,
+            Math.sin(i * 2.1) * 0.18 * scale,
+          );
+          group.add(lobe);
+        }
+        return makePiece(group, 5, world, 2);
+      }
+      bush(-6.5, -1.9, 1.1, 0x315d50);
+      bush(-5.55, -2.35, 1.35, 0x2b5349);
+      bush(6.85, -2.35, 1.15, 0x315b4d);
+      bush(4.9, -5.8, 1.25, 0x2c5047);
+
+      const tree = new THREE.Group();
+      tree.position.set(-6.6, 0.22, -5.25);
+      const trunk = cylinder(0.18, 0.28, 3.1, 8, toon(0x5c4739), { edges: true });
+      trunk.position.y = 1.55;
+      trunk.rotation.z = -0.07;
+      tree.add(trunk);
+      for (let i = 0; i < 3; i += 1) {
+        const branch = cylinder(0.08, 0.1, 1.25, 7, toon(0x5c4739), { edges: false });
+        branch.position.set((i - 1) * 0.36, 2.32 + i * 0.16, 0);
+        branch.rotation.z = (i - 1) * 0.72;
+        tree.add(branch);
+      }
+      const foliage = [
+        [-0.56, 3.1, 0.02, 0.94],
+        [0.38, 3.23, 0.18, 1.02],
+        [0.8, 2.9, -0.1, 0.77],
+        [-0.12, 3.62, -0.05, 0.85],
+        [-0.95, 2.84, 0.22, 0.68],
+      ];
+      foliage.forEach(([x, y, z, scale], index) => {
+        const clump = sphere(0.62 * scale, toon(index % 2 ? 0x3f7159 : 0x315e4d), 10);
+        clump.scale.set(1.1, 0.92, 1);
+        clump.position.set(x, y, z);
+        tree.add(clump);
+      });
+      makePiece(tree, 5, world, 2.5);
+
+      // Shop bins and a leaning signboard.
+      function trashBin(x, z, color) {
+        const bin = new THREE.Group();
+        bin.position.set(x, 0.22, z);
+        const body = cylinder(0.23, 0.2, 0.62, 10, toon(color), { edges: true });
+        body.position.y = 0.31;
+        bin.add(body);
+        const lid = cylinder(0.25, 0.25, 0.08, 10, toon(0x43575a), { edges: true });
+        lid.position.y = 0.66;
+        bin.add(lid);
+        return makePiece(bin, 5, world, 1.1);
+      }
+      trashBin(-4.78, 3.3, 0x58746e);
+      trashBin(-5.3, 3.32, 0xb88058);
+
+      const chalkBoard = new THREE.Group();
+      chalkBoard.position.set(4.45, 0.22, 3.4);
+      chalkBoard.rotation.y = -0.28;
+      for (const x of [-0.38, 0.38]) {
+        const leg = box(0.09, 1.02, 0.1, toon(0x6a4b38), { edgeOpacity: 0.35 });
+        leg.position.set(x, 0.51, 0);
+        leg.rotation.z = x > 0 ? -0.14 : 0.14;
+        chalkBoard.add(leg);
+      }
+      const board = box(0.9, 0.68, 0.07, toon(0x20383b), { edgeColor: 0x0d2022, edgeOpacity: 0.55 });
+      board.position.set(0, 0.73, 0.02);
+      chalkBoard.add(board);
+      for (let i = 0; i < 4; i += 1) {
+        const chalk = box(0.52 - i * 0.04, 0.025, 0.01, basic(i === 0 ? 0xf2c36f : 0xd9e1d6), {
+          edges: false,
+          castShadow: false,
+        });
+        chalk.position.set(-0.04, 0.88 - i * 0.12, 0.065);
+        chalkBoard.add(chalk);
+      }
+      makePiece(chalkBoard, 5, world, 1.4);
+
+      // Small stone garden along the back foundation.
+      for (let i = 0; i < 12; i += 1) {
+        const pebble = new THREE.Mesh(
+          new THREE.DodecahedronGeometry(0.13 + Math.random() * 0.12, 0),
+          toon(i % 3 ? 0x71827d : 0x9b9a89),
+        );
+        pebble.scale.y = 0.5;
+        pebble.position.set(-7.7 + i * 0.53, 0.24, -3.48 - Math.sin(i) * 0.16);
+        pebble.rotation.y = i * 1.8;
+        pebble.castShadow = true;
+        makePiece(pebble, 5, world, 1.1);
+      }
+
+      // Neon message on a garden-facing rear board.
+      const rearNeonTexture = canvasTexture(512, 256, (ctx, width, height) => {
+        ctx.fillStyle = "#2a1d1a";
+        roundedRect(ctx, 5, 5, width - 10, height - 10, 28);
+        ctx.fill();
+        ctx.strokeStyle = "#d8ad68";
+        ctx.lineWidth = 7;
+        roundedRect(ctx, 18, 18, width - 36, height - 36, 22);
+        ctx.stroke();
+        ctx.textAlign = "center";
+        ctx.fillStyle = "#f4dfb6";
+        ctx.font = '700 68px "STKaiti", "KaiTi", "Microsoft YaHei", serif';
+        ctx.fillText("檐下灯火", width / 2, 112);
+        ctx.fillStyle = "#d6a65e";
+        ctx.font = '500 31px "Microsoft YaHei", sans-serif';
+        ctx.fillText("雨夜常明 · 相逢有时", width / 2, 174);
+      });
+      const rearSign = plane(2.45, 1.18, new THREE.MeshBasicMaterial({
+        map: rearNeonTexture,
+        transparent: true,
+        toneMapped: false,
+      }));
+      rearSign.position.set(5.74, 2.6, -5.82);
+      rearSign.rotation.y = 0.26;
+      makePiece(rearSign, 5, world, 1.6);
+      const rearSignPost = cylinder(0.055, 0.055, 2.2, 8, toon(0x263a41), { edges: false });
+      rearSignPost.position.set(5.74, 1.22, -5.88);
+      makePiece(rearSignPost, 4, world, 1.4);
+      addLightGlow(world, new THREE.Vector3(5.74, 2.62, -5.73), 0xe3aa62, 1.6, 0.17);
+
+      // Layered night lighting.
+      const hemisphere = new THREE.HemisphereLight(0x86bad1, 0x182127, 2.2);
+      scene.add(hemisphere);
+
+      const moonLight = new THREE.DirectionalLight(0x9bc9df, 3.1);
+      moonLight.position.set(-8, 14, 8);
+      moonLight.castShadow = true;
+      moonLight.shadow.mapSize.set(2048, 2048);
+      moonLight.shadow.camera.left = -13;
+      moonLight.shadow.camera.right = 13;
+      moonLight.shadow.camera.top = 13;
+      moonLight.shadow.camera.bottom = -13;
+      moonLight.shadow.camera.near = 1;
+      moonLight.shadow.camera.far = 35;
+      moonLight.shadow.bias = -0.00035;
+      scene.add(moonLight);
+
+      const warmInterior = new THREE.PointLight(0xffd69b, 52, 12, 2);
+      warmInterior.position.set(0, 2.75, -0.18);
+      warmInterior.castShadow = true;
+      warmInterior.shadow.mapSize.set(768, 768);
+      scene.add(warmInterior);
+
+      const leftInterior = new THREE.PointLight(0x84e5df, 14, 7, 2);
+      leftInterior.position.set(-2.2, 1.75, -1.72);
+      scene.add(leftInterior);
+
+      const awningLight = new THREE.PointLight(0xffa561, 23, 7, 2);
+      awningLight.position.set(0.4, 2.45, 3.74);
+      scene.add(awningLight);
+
+      const neonLight = new THREE.PointLight(0x62dbd6, 15, 6, 2);
+      neonLight.position.set(1.65, 3.38, 3.18);
+      scene.add(neonLight);
+
+      // Rain volume, confined to the square plinth when viewed from above.
+      const rainCount = 330;
+      const rainPositions = new Float32Array(rainCount * 6);
+      const rainDrops = [];
+      for (let i = 0; i < rainCount; i += 1) {
+        const x = (Math.random() - 0.5) * 17.4;
+        const y = 0.5 + Math.random() * 11.6;
+        const z = (Math.random() - 0.5) * 17.4;
+        const speed = 4.3 + Math.random() * 4.2;
+        const length = 0.2 + Math.random() * 0.42;
+        rainDrops.push({ x, y, z, speed, length });
+        const index = i * 6;
+        rainPositions[index] = x;
+        rainPositions[index + 1] = y;
+        rainPositions[index + 2] = z;
+        rainPositions[index + 3] = x + 0.045;
+        rainPositions[index + 4] = y - length;
+        rainPositions[index + 5] = z + 0.025;
+      }
+      const rainGeometry = new THREE.BufferGeometry();
+      rainGeometry.setAttribute("position", new THREE.BufferAttribute(rainPositions, 3));
+      const rain = new THREE.LineSegments(
+        rainGeometry,
+        new THREE.LineBasicMaterial({
+          color: 0xa9d9e6,
+          transparent: true,
+          opacity: 0.29,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        }),
+      );
+      rain.frustumCulled = false;
+      world.add(rain);
+
+      // Soft radio-wave style neon accents around the shop sign.
+      const neonHalo = glow(0xffb476, 4.4, 0.055);
+      neonHalo.position.set(0, 3.38, 2.94);
+      world.add(neonHalo);
+
+      // Camera interaction: drag to orbit, wheel or pinch to zoom.
+      const pointers = new Map();
+      let dragPointer = null;
+      let lastPointer = { x: 0, y: 0 };
+      let pinchDistance = 0;
+      let interactionTime = 0;
+
+      function setPointerPosition(event) {
+        const rect = canvas.getBoundingClientRect();
+        return {
+          x: event.clientX - rect.left,
+          y: event.clientY - rect.top,
+        };
+      }
+
+      canvas.addEventListener("pointerdown", (event) => {
+        canvas.setPointerCapture(event.pointerId);
+        pointers.set(event.pointerId, setPointerPosition(event));
+        if (pointers.size === 1) {
+          dragPointer = event.pointerId;
+          lastPointer = setPointerPosition(event);
+          canvas.classList.add("is-dragging");
+        } else if (pointers.size === 2) {
+          const [a, b] = [...pointers.values()];
+          pinchDistance = Math.hypot(a.x - b.x, a.y - b.y);
+        }
+        interactionTime = performance.now();
+      });
+
+      canvas.addEventListener("pointermove", (event) => {
+        if (!pointers.has(event.pointerId)) return;
+        const previous = pointers.get(event.pointerId);
+        const current = setPointerPosition(event);
+        pointers.set(event.pointerId, current);
+        interactionTime = performance.now();
+
+        if (pointers.size === 2) {
+          const [a, b] = [...pointers.values()];
+          const nextDistance = Math.hypot(a.x - b.x, a.y - b.y);
+          if (pinchDistance > 0) {
+            orbit.targetRadius = THREE.MathUtils.clamp(
+              orbit.targetRadius * (pinchDistance / Math.max(nextDistance, 1)),
+              12.4,
+              30,
+            );
+          }
+          pinchDistance = nextDistance;
+          return;
+        }
+
+        if (dragPointer !== event.pointerId) return;
+        orbit.targetTheta -= (current.x - previous.x) * 0.006;
+        orbit.targetPhi = THREE.MathUtils.clamp(
+          orbit.targetPhi - (current.y - previous.y) * 0.0047,
+          0.58,
+          1.39,
+        );
+        lastPointer = current;
+      });
+
+      function endPointer(event) {
+        pointers.delete(event.pointerId);
+        pinchDistance = 0;
+        if (dragPointer === event.pointerId) {
+          dragPointer = null;
+          canvas.classList.remove("is-dragging");
+        }
+        interactionTime = performance.now();
+      }
+      canvas.addEventListener("pointerup", endPointer);
+      canvas.addEventListener("pointercancel", endPointer);
+      canvas.addEventListener("pointerleave", (event) => {
+        if (!canvas.hasPointerCapture(event.pointerId)) endPointer(event);
+      });
+      canvas.addEventListener("wheel", (event) => {
+        event.preventDefault();
+        orbit.targetRadius = THREE.MathUtils.clamp(
+          orbit.targetRadius + event.deltaY * 0.012,
+          12.4,
+          30,
+        );
+        interactionTime = performance.now();
+      }, { passive: false });
+      canvas.addEventListener("dblclick", () => {
+        orbit.targetTheta = 0.36;
+        orbit.targetPhi = 1.28;
+        orbit.targetRadius = 20.8;
+      });
+      canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+
+      function resize() {
+        const rect = canvas.getBoundingClientRect();
+        const width = Math.max(1, rect.width);
+        const height = Math.max(1, rect.height);
+        renderer.setSize(width, height, false);
+        camera.aspect = width / height;
+        camera.fov = width < 620 ? 40 : 34;
+        camera.updateProjectionMatrix();
+      }
+      const resizeObserver = new ResizeObserver(resize);
+      resizeObserver.observe(canvas);
+      resize();
+
+      const animationStart = performance.now();
+      const durationToAssemble = 7.4;
+      let lastRainTime = 0;
+
+      function smoothStep(value) {
+        const t = THREE.MathUtils.clamp(value, 0, 1);
+        return t * t * (3 - 2 * t);
+      }
+
+      function easeOutCubic(value) {
+        return 1 - Math.pow(1 - THREE.MathUtils.clamp(value, 0, 1), 3);
+      }
+
+      function updateAssembly(now) {
+        const elapsed = (now - animationStart) / 1000;
+        for (const piece of pieces) {
+          if (reducedMotion) {
+            piece.object.visible = true;
+            piece.object.position.copy(piece.homePosition);
+            piece.object.quaternion.copy(piece.homeQuaternion);
+            piece.object.scale.copy(piece.homeScale);
+            continue;
+          }
+          const raw = (elapsed - piece.start) / piece.duration;
+          if (raw <= 0) {
+            piece.object.visible = elapsed > 0.38;
+            piece.object.position.copy(piece.fromPosition);
+            piece.object.quaternion.copy(piece.fromQuaternion);
+            piece.object.scale.copy(piece.homeScale);
+            continue;
+          }
+          const t = smoothStep(Math.min(raw, 1));
+          const lift = easeOutCubic(Math.min((t + 0.08) / 1.08, 1));
+          piece.object.visible = true;
+          piece.object.position.lerpVectors(piece.fromPosition, piece.homePosition, lift);
+          piece.object.quaternion.slerpQuaternions(piece.fromQuaternion, piece.homeQuaternion, lift);
+          piece.object.scale.copy(piece.homeScale).multiplyScalar(0.68 + 0.32 * smoothStep(t));
+          if (raw >= 1) {
+            piece.object.position.copy(piece.homePosition);
+            piece.object.quaternion.copy(piece.homeQuaternion);
+            piece.object.scale.copy(piece.homeScale);
+          }
+        }
+      }
+
+      function updateRain(elapsed) {
+        if (reducedMotion) return;
+        const dt = Math.min(0.04, Math.max(0, elapsed - lastRainTime));
+        lastRainTime = elapsed;
+        const position = rainGeometry.getAttribute("position");
+        const array = position.array;
+        for (let i = 0; i < rainDrops.length; i += 1) {
+          const drop = rainDrops[i];
+          drop.y -= drop.speed * dt;
+          if (drop.y < 0.25) {
+            drop.y = 10.5 + Math.random() * 2.2;
+            drop.x = (Math.random() - 0.5) * 17.4;
+            drop.z = (Math.random() - 0.5) * 17.4;
+          }
+          const offset = i * 6;
+          array[offset] = drop.x + Math.sin(elapsed * 0.9 + i) * 0.015;
+          array[offset + 1] = drop.y;
+          array[offset + 2] = drop.z;
+          array[offset + 3] = drop.x + 0.045;
+          array[offset + 4] = drop.y - drop.length;
+          array[offset + 5] = drop.z + 0.025;
+        }
+        position.needsUpdate = true;
+      }
+
+      function animate() {
+        const elapsed = clock.getElapsedTime();
+        const now = performance.now();
+        updateAssembly(now);
+        updateRain(elapsed);
+
+        const damping = 1 - Math.pow(0.08, 1 / 60);
+        orbit.theta += (orbit.targetTheta - orbit.theta) * damping;
+        orbit.phi += (orbit.targetPhi - orbit.phi) * damping;
+        orbit.radius += (orbit.targetRadius - orbit.radius) * damping;
+        const sinPhi = Math.sin(orbit.phi);
+        camera.position.set(
+          cameraTarget.x + orbit.radius * sinPhi * Math.sin(orbit.theta),
+          cameraTarget.y + orbit.radius * Math.cos(orbit.phi),
+          cameraTarget.z + orbit.radius * sinPhi * Math.cos(orbit.theta),
+        );
+        camera.lookAt(cameraTarget);
+
+        // Very subtle neon breathing and wet-ground shimmer.
+        const pulse = 0.96 + Math.sin(elapsed * 1.38) * 0.04;
+        neonHalo.material.opacity = 0.052 * pulse;
+        neonLight.intensity = 15 * pulse;
+      warmInterior.intensity = 52 + Math.sin(elapsed * 0.72) * 1.4;
+        puddles.forEach((puddle, index) => {
+          puddle.material.opacity = 0.27 + Math.sin(elapsed * 0.75 + index) * 0.018;
+        });
+
+        const assembled = (now - animationStart) / 1000 > durationToAssemble;
+        if (assembled && !reducedMotion) {
+          // A barely perceptible idle sway keeps the miniature feeling alive without moving the camera.
+          neonHalo.position.y = 3.38 + Math.sin(elapsed * 0.7) * 0.008;
+        }
+
+        void interactionTime;
+        renderer.render(scene, camera);
+      }
+
+      if (reducedMotion) {
+        updateAssembly(performance.now() + 20000);
+      }
+      renderer.setAnimationLoop(animate);
+    } catch (error) {
+      canvas.hidden = true;
+      console.error("Unable to initialize the miniature scene:", error);
+    }
+  </script>
+</div>
